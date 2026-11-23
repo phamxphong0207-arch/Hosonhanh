@@ -32,37 +32,12 @@ MUC_CONG_TY = "8. Thông tin công ty"
 MUC_AI = ["1. CCCD", "5. VNEID"]  # các mục AI đọc để lấy thông tin khách hàng
 
 
-def load_local_config() -> dict:
-    """Đọc file cau_hinh.toml (hoặc secrets.toml) nằm cùng thư mục với app: KEY = "value"."""
-    base = os.path.dirname(os.path.abspath(__file__))
-    cfg = {}
-    for fname in ("cau_hinh.toml", "secrets.toml"):
-        path = os.path.join(base, fname)
-        if not os.path.exists(path):
-            continue
-        with open(path, encoding="utf-8-sig") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                cfg[k.strip()] = v.strip().strip('"').strip("'").strip()
-    return cfg
-
-
-LOCAL_CFG = load_local_config()
-
-
 def get_secret(name: str, default: str = "") -> str:
-    # Thứ tự ưu tiên: Streamlit Secrets (khi deploy) > file cau_hinh.toml > biến môi trường
     try:
         v = st.secrets.get(name, "")
     except Exception:
         v = ""
-    v = v or LOCAL_CFG.get(name, "") or os.getenv(name, default)
-    if name == "MY_PASSWORD":
-        v = v.replace(" ", "")  # mật khẩu ứng dụng Gmail: bỏ khoảng trắng
-    return v
+    return v or os.getenv(name, default)
 
 
 MY_EMAIL = get_secret("MY_EMAIL")
