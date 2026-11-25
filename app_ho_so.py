@@ -32,12 +32,37 @@ MUC_CONG_TY = "8. Thông tin công ty"
 MUC_AI = ["1. CCCD", "5. VNEID"]  # các mục AI đọc để lấy thông tin khách hàng
 
 
+def load_local_config() -> dict:
+    """Đọc file cau_hinh.toml (hoặc secrets.toml) nằm cùng thư mục với app: KEY = "value"."""
+    base = os.path.dirname(os.path.abspath(__file__))
+    cfg = {}
+    for fname in ("cau_hinh.toml", "secrets.toml"):
+        path = os.path.join(base, fname)
+        if not os.path.exists(path):
+            continue
+        with open(path, encoding="utf-8-sig") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                cfg[k.strip()] = v.strip().strip('"').strip("'").strip()
+    return cfg
+
+
+LOCAL_CFG = load_local_config()
+
+
 def get_secret(name: str, default: str = "") -> str:
+    # Thứ tự ưu tiên: Streamlit Secrets (khi deploy) > file cau_hinh.toml > biến môi trường
     try:
         v = st.secrets.get(name, "")
     except Exception:
         v = ""
-    return v or os.getenv(name, default)
+    v = v or LOCAL_CFG.get(name, "") or os.getenv(name, default)
+    if name == "MY_PASSWORD":
+        v = v.replace(" ", "")  # mật khẩu ứng dụng Gmail: bỏ khoảng trắng
+    return v
 
 
 MY_EMAIL = get_secret("MY_EMAIL")
@@ -75,7 +100,8 @@ Trường nào không có thì để chuỗi rỗng. Ngày định dạng dd/mm/
 - ho_ten: viết HOA có dấu như trên CCCD.
 - ngay_cap_cccd: ngày ở mặt sau CCCD (cạnh Cục trưởng Cục Cảnh sát QLHC về TTXH).
 - ngay_het_han_cccd: "Có giá trị đến" ở mặt trước.
-- dia_chi_ho_khau: Nơi thường trú trên CCCD (ghép đủ các dòng).
+- dia_chi_ho_khau: "Nơi thường trú" trên ảnh VNeID (thông tin cá nhân hoặc thông tin cư trú), ghép đủ các dòng.
+  KHÔNG lấy địa chỉ từ CCCD vì CCCD ghi đơn vị hành chính cũ; chỉ dùng địa chỉ VNeID. Nếu không có ảnh VNeID thì để rỗng.
 - dia_chi_hien_tai: "Nơi ở hiện tại" trên VNeID thông tin cư trú.
 - sdt_kh: số điện thoại trên VNeID thông tin cá nhân.
 """
@@ -245,7 +271,6 @@ with st.sidebar:
     api_key = GEMINI_KEY or st.text_input("Gemini API Key", type="password")
     model = st.selectbox("Model AI", ["gemini-3.5-flash-lite", "gemini-3.8-flash"], index=0)
     team = st.text_input("TEAM", value="MASTER 6")
-    ten_nv = st.text_input("Tên Nhân Viên (NV)", value="Nguyễn Văn Cường")
     auto_send = st.checkbox("Tự động gửi mail ngay sau khi trích xuất", value=True,
                             help="Bỏ chọn để xem lại và sửa nội dung trước khi gửi.")
 
@@ -258,6 +283,13 @@ st.subheader("TEAM MASTER 6 - CỔNG NHẬP HỒ SƠ ONLINE")
 render_guide()
 
 st.write("### 1. Thông tin bổ sung")
+ten_nv = st.text_input("👤 Tên nhân viên (NV):", value="Nguyễn Văn Cường")
+song_ho_khau = st.checkbox("🏠 Khách hàng đang sống tại địa chỉ hộ khẩu", value=True,
+                           help="Tích: địa chỉ hiện tại = địa chỉ hộ khẩu. Bỏ tích: nhập địa chỉ hiện tại bên dưới.")
+dia_chi_nhap = ""
+if not song_ho_khau:
+    dia_chi_nhap = st.text_input("📍 Địa chỉ hiện tại của khách:",
+                                 placeholder="Số nhà, thôn/phố, xã/phường, tỉnh/thành")
 ten_kh_nhap = st.text_input("Họ tên khách hàng (để trống nếu muốn AI tự đọc từ CCCD):")
 c1, c2 = st.columns(2)
 sdt_tc = c1.text_input("SĐT Tham chiếu")
@@ -302,6 +334,10 @@ if run:
         st.warning("⚠️ Vui lòng tải ảnh CCCD (mục 1) và VNEID (mục 5) để AI đọc thông tin.")
     elif not api_key:
         st.error("Chưa có Gemini API Key (đặt GEMINI_API_KEY trong Secrets hoặc nhập ở thanh bên).")
+    elif not ten_nv.strip():
+        st.warning("⚠️ Vui lòng nhập tên nhân viên (NV).")
+    elif not song_ho_khau and not dia_chi_nhap.strip():
+        st.warning("⚠️ Khách không sống tại hộ khẩu: vui lòng nhập địa chỉ hiện tại.")
     else:
         with st.status("Đang xử lý...", expanded=True) as status:
             try:
@@ -320,10 +356,16 @@ if run:
                 st.exception(e)
                 st.stop()
         ho_ten = ten_kh_nhap.strip() or hs.ho_ten or "KhachHang"
+        if not hs.dia_chi_ho_khau:
+            st.warning("Không đọc được Nơi thường trú từ ảnh VNeID: kiểm tra đã tải ảnh VNeID (mục 5) chưa.")
+        if song_ho_khau:  # sống tại hộ khẩu: địa chỉ hiện tại = địa chỉ hộ khẩu
+            dia_chi_ht = hs.dia_chi_ho_khau or hs.dia_chi_hien_tai
+        else:
+            dia_chi_ht = dia_chi_nhap.strip()
         text = TEMPLATE.format(
             team_name=team, ho_ten=ho_ten, ngay_sinh=hs.ngay_sinh, so_cccd=hs.so_cccd,
             sdt_kh=hs.sdt_kh, ngay_cap_cccd=hs.ngay_cap_cccd,
-            ngay_het_han_cccd=hs.ngay_het_han_cccd, dia_chi_hien_tai=hs.dia_chi_hien_tai,
+            ngay_het_han_cccd=hs.ngay_het_han_cccd, dia_chi_hien_tai=dia_chi_ht,
             dia_chi_ho_khau=hs.dia_chi_ho_khau, ten_cong_ty=hs.ten_cong_ty,
             mst_cong_ty=hs.mst_cong_ty, dia_chi_cong_ty=hs.dia_chi_cong_ty,
             sdt_tham_chieu=sdt_tc, thu_nhap_luong=luong, nhu_cau_vay=nhu_cau, ten_nv=ten_nv)
